@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Elite Prompter · Audience</title>
+<meta name="theme-color" content="#000000">
+<style>
+/* The audience screen: slides only, on black, with a soft crossfade between them. */
+:root { --bg: #000; --dim: #8a909b; --cue: #f6b93b; color-scheme: dark; }
+html, body { height: 100%; margin: 0; background: var(--bg); overflow: hidden; }
+body { font-family: "Atkinson Hyperlegible", "Segoe UI", Roboto, Arial, sans-serif; cursor: default; }
+body.idle { cursor: none; }
+.frame { position: fixed; inset: 0; display: grid; place-items: center; }
+canvas { position: absolute; max-width: 100%; max-height: 100%; opacity: 0; transition: opacity .6s ease; }
+canvas.on { opacity: 1; }
+#wait { color: var(--dim); text-align: center; display: grid; gap: 10px; }
+#wait b { color: #f4efe4; font-size: 28px; letter-spacing: .02em; }
+#hint {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); padding: 8px 14px; border-radius: 999px;
+  background: rgba(22, 26, 32, .85); color: #f4efe4; font-size: 14px; transition: opacity .6s; pointer-events: none;
+}
+body.idle #hint { opacity: 0; }
+@media (prefers-reduced-motion: reduce) { canvas { transition: none; } }
+</style>
+</head><body>
+<div class="frame">
+  <canvas id="a"></canvas><canvas id="b"></canvas>
+  <div id="wait"><b>Elite Prompter</b><span>Waiting for slides from the presenter screen.</span></div>
+</div>
+<div id="hint">Click for full screen</div>
+<script src="vendor/pdfjs/pdf.min.js"></script>
+<script>
+const lib = window.pdfjsLib || window['pdfjs-dist/build/pdf'];
+lib.GlobalWorkerOptions.workerSrc = 'vendor/pdfjs/pdf.worker.min.js';
+const canvases = [document.getElementById('a'), document.getElementById('b')];
+let front = 0, pdf = null, current = 0, drawing = Promise.resolve();
+const channel = new BroadcastChannel('elite-stage');
+
+function getDeck() {
+  return new Promise(res => {
+    const r = indexedDB.open('elite-prompter', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('files');
+    r.onerror = () => res(null);
+    r.onsuccess = () => {
+      const q = r.result.transaction('files').objectStore('files').get('deck');
+      q.onsuccess = () => res(q.result || null); q.onerror = () => res(null);
+    };
+  });
+}
+async function loadDeck() {
+  const blob = await getDeck();
+  pdf = blob ? await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise : null;
+  document.getElementById('wait').hidden = !!pdf;
+  canvases.forEach(c => c.classList.remove('on'));
+  current = 0;
+  channel.postMessage({ type: 'hello' });
+}
+// Draw the next slide on the hidden canvas, then fade it in over the current one.
+function show(n, redraw) {
+  drawing = drawing.then(async () => {
+    if (!pdf || n < 1 || n > pdf.numPages || (n === current && !redraw)) return;
+    const page = await pdf.getPage(n);
+    const base = page.getViewport({ scale: 1 });
+    const ratio = window.devicePixelRatio || 1;
+    const scale = Math.min(innerWidth / base.width, innerHeight / base.height);
+    const vp = page.getViewport({ scale: scale * ratio });
+    const back = canvases[1 - front];
+    back.width = vp.width; back.height = vp.height;
+    back.style.width = (vp.width / ratio) + 'px'; back.style.height = (vp.height / ratio) + 'px';
+    await page.render({ canvasContext: back.getContext('2d'), viewport: vp }).promise;
+    back.classList.add('on');
+    canvases[front].classList.remove('on');
+    front = 1 - front; current = n;
+  }).catch(() => {});
+}
+channel.onmessage = e => {
+  const m = e.data || {};
+  if (m.type === 'slide') show(m.n);
+  if (m.type === 'deck') loadDeck();
+};
+let resizeTimer;
+addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => show(current, true), 200); });
+document.addEventListener('click', () => {
+  if (!document.fullscreenElement && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+});
+let idleTimer;
+function wake() { document.body.classList.remove('idle'); clearTimeout(idleTimer); idleTimer = setTimeout(() => document.body.classList.add('idle'), 2500); }
+addEventListener('mousemove', wake); wake();
+loadDeck();
+</script>
+</body></html>
