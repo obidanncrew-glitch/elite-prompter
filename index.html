@@ -115,7 +115,10 @@ main.waiting .ln:not(.cue) { opacity: .28; }
   padding-block: 10px calc(10px + env(safe-area-inset-bottom, 0px)); padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
 }
 .dock label { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
-#heard { flex: 1 1 100%; min-height: 1.2em; font-family: var(--mono); font-size: 12px; color: var(--dim); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.heardrow { flex: 1 1 100%; display: flex; gap: 8px; align-items: center; min-width: 0; }
+.level { width: 48px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; flex: none; }
+.level i { display: block; height: 100%; width: 0; background: var(--ok); transition: width .08s; }
+#heard { flex: 1 1 auto; min-width: 0; min-height: 1.2em; font-family: var(--mono); font-size: 12px; color: var(--dim); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .offline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; color: var(--dim); }
 .slidebar {
   display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); background: var(--panel);
@@ -193,7 +196,7 @@ select { background: var(--stage); border: 1px solid var(--line); border-radius:
 </main>
 
 <footer class="dock">
-  <span id="heard" aria-live="polite"></span>
+  <span class="heardrow"><span id="level" class="level" hidden><i></i></span><span id="heard" aria-live="polite"></span></span>
   <label for="say">Practice</label>
   <input id="say" type="text" autocomplete="off" placeholder="Type what you would say and press Enter">
   <button id="demo" type="button">Play demo</button>
@@ -706,6 +709,10 @@ function startBrowser() {
       stopMic(false);
       if (fallBack('This browser does not offer speech recognition')) return;
       note('Speech recognition is turned off in this browser. Switch Listening to On-device in Settings.');
+    } else if (e.error === 'not-allowed' && restarts.length) {
+      stopMic(false);
+      if (fallBack('Browser speech stopped after a pause')) return;
+      note('Browser speech stopped after a pause. Switch Listening to On-device in Settings.');
     } else if (e.error === 'not-allowed') {
       stopMic(false);
       note('The microphone is blocked. Allow the microphone for this site in your browser settings, then tap Start voice again. Practice below works without it.');
@@ -751,8 +758,12 @@ function startBrowser() {
 // On-device listening: the Vosk engine runs inside the page, so it works in any
 // modern browser and offline once its English model has been downloaded.
 let local = null, voskModel = null, lastPartial = '';
+// iPhone and iPad speech recognition stops after each pause and can't restart without
+// a tap, so Automatic uses the on-device engine there.
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 function engineToUse() {
-  if (cfg.engine === 'local' || !SR || !navigator.onLine) return 'local';
+  if (cfg.engine === 'browser' && SR) return 'browser';
+  if (cfg.engine === 'local' || !SR || !navigator.onLine || IS_IOS) return 'local';
   return 'browser';
 }
 function fallBack(reason) {
@@ -804,6 +815,7 @@ async function startLocal(keepNote) {
   }
   const Ctx = window.AudioContext || window.webkitAudioContext;
   const ctx = new Ctx();
+  ctx.resume().catch(() => {}); // must happen inside the tap on iPhone
   local = { ctx };
   listening = true;
   beginSession();
@@ -813,7 +825,12 @@ async function startLocal(keepNote) {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
     local.stream = stream;
-    await loadModel();
+    startMeter(ctx, stream);
+    if (!voskModel) {
+      const t0 = Date.now();
+      const tick = setInterval(() => heard('downloading the speech engine… ' + Math.round((Date.now() - t0) / 1000) + ' s (about 40 MB the first time, then never again)'), 1000);
+      try { await loadModel(); } finally { clearInterval(tick); }
+    }
     if (!listening || !local || local.ctx !== ctx) { stream.getTracks().forEach(t => t.stop()); return; }
     const r = new voskModel.KaldiRecognizer(ctx.sampleRate);
     r.on('result', m => {
@@ -834,7 +851,7 @@ async function startLocal(keepNote) {
     src.connect(node); node.connect(ctx.destination);
     Object.assign(local, { r, src, node });
     await ctx.resume();
-    heard('listening on this device…');
+    heard('listening on this device… say the first line');
     try { navigator.wakeLock && navigator.wakeLock.request('screen').then(l => { wake = l; }).catch(() => {}); } catch (err) {}
     render(false);
   } catch (err) {
@@ -845,7 +862,28 @@ async function startLocal(keepNote) {
       : 'On-device listening could not start. Check your internet connection for the first download, then try again.');
   }
 }
+// A small level bar next to "Heard" shows the microphone is picking up sound.
+let meterRaf = 0;
+function startMeter(ctx, stream) {
+  try {
+    const an = ctx.createAnalyser(); an.fftSize = 512;
+    ctx.createMediaStreamSource(stream).connect(an);
+    const buf = new Uint8Array(an.fftSize);
+    const bar = $('level');
+    bar.hidden = false;
+    const loop = () => {
+      an.getByteTimeDomainData(buf);
+      let peak = 0;
+      for (const v of buf) peak = Math.max(peak, Math.abs(v - 128));
+      bar.firstElementChild.style.width = Math.min(100, peak * 1.6) + '%';
+      meterRaf = requestAnimationFrame(loop);
+    };
+    loop();
+  } catch (err) {}
+}
+function stopMeter() { cancelAnimationFrame(meterRaf); $('level').hidden = true; }
 function stopLocal() {
+  stopMeter();
   if (!local) return;
   const l = local; local = null;
   try { l.node && (l.node.onaudioprocess = null, l.node.disconnect()); } catch (err) {}
