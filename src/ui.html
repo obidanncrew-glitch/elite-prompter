@@ -1,0 +1,493 @@
+<title>Elite Prompter</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a dark studio stage that fills the screen, a thin control bar on top,
+   a reading line one third down, and a practice dock at the bottom. Single dark look, by choice. */
+:root {
+  --stage: #0c0e11;
+  --panel: #161a20;
+  --line: #272c34;
+  --ink: #f4efe4;
+  --dim: #8a909b;
+  --spoken: #4b515c;
+  --tally: #e5484d;
+  --cue: #f6b93b;
+  --calm: #6aa8ff;
+  --ok: #46c27a;
+  --read: "Atkinson Hyperlegible", "Segoe UI", Roboto, Arial, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  --size: 44px;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  background: var(--stage); color: var(--ink); font-family: var(--read);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+button, select, input, textarea { font: inherit; color: inherit; }
+button {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 12px; cursor: pointer; white-space: nowrap;
+}
+button:hover { border-color: var(--dim); }
+button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--cue); outline-offset: 2px; }
+.bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  padding-block: 10px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  border-bottom: 1px solid var(--line); background: var(--stage); z-index: 3;
+}
+.brand { font-family: var(--mono); font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); margin-right: auto; }
+.pill {
+  font-family: var(--mono); font-size: 12px; letter-spacing: .06em; text-transform: uppercase;
+  display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--dim);
+}
+.pill i { width: 8px; height: 8px; border-radius: 50%; background: var(--spoken); }
+.pill.live i { background: var(--tally); box-shadow: 0 0 0 3px color-mix(in srgb, var(--tally) 30%, transparent); }
+.pill.live { color: var(--ink); }
+.pill.wait { color: var(--cue); border-color: color-mix(in srgb, var(--cue) 50%, var(--line)); }
+.pill.wait i { background: var(--cue); }
+.pace { font-family: var(--mono); font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; min-width: 64px; }
+#mic.on { background: var(--tally); border-color: var(--tally); color: #fff; }
+
+main { position: relative; flex: 1; min-height: 0; }
+#scroll {
+  position: absolute; inset: 0; overflow-y: auto; scrollbar-width: none;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+#scroll::-webkit-scrollbar { display: none; }
+#text {
+  max-width: 34ch; margin: 0 auto; padding-block: 33vh 70vh;
+  font-size: var(--size); line-height: 1.45; font-weight: 700;
+}
+#text.mirror { transform: scaleX(-1); }
+.guide {
+  position: absolute; left: 0; right: 0; top: 33%; height: 0; border-top: 1px dashed var(--line); pointer-events: none;
+}
+.guide::before {
+  content: ""; position: absolute; left: max(6px, env(safe-area-inset-left, 0px)); top: -7px;
+  border: 7px solid transparent; border-left-color: var(--cue);
+}
+.ln { margin: 0 0 .35em; transition: opacity .4s; }
+.ln.h { font-family: var(--mono); font-size: .38em; font-weight: 500; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); margin: 1.4em 0 .6em; }
+.ln.gap { height: .5em; }
+.w { cursor: pointer; transition: color .25s; }
+.w.done { color: var(--spoken); }
+.chip {
+  display: inline-block; vertical-align: .15em; font-family: var(--mono); font-weight: 500; font-size: .32em;
+  letter-spacing: .06em; text-transform: uppercase; padding: .2em .55em; border-radius: 4px; margin: 0 .25em;
+  border: 1px solid currentColor; color: var(--dim);
+}
+.chip.pause { color: var(--cue); }
+.chip.build { color: var(--tally); }
+.chip.softer { color: var(--calm); }
+.chip.verse { color: #d9c27a; }
+.chip.adlib { display: block; width: fit-content; margin: .3em 0; color: var(--dim); border-style: dashed; }
+
+/* Waiting for you: everything settles back, the next words stand forward. */
+main.waiting .ln:not(.cue) { opacity: .28; }
+.ln.cue .w:not(.done) { color: color-mix(in srgb, var(--ink) 55%, transparent); }
+.ln.cue .w.lead { color: var(--cue); }
+
+#banner {
+  position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  width: min(560px, calc(100% - 32px)); background: var(--panel); border: 1px solid color-mix(in srgb, var(--cue) 45%, var(--line));
+  border-radius: 12px; padding: 12px 16px; display: flex; gap: 12px; align-items: baseline; z-index: 2;
+}
+#banner small { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--cue); white-space: nowrap; }
+#banner b { font-size: 20px; }
+#note {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%); width: min(620px, calc(100% - 32px));
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; font-size: 14px; color: var(--ink); z-index: 2;
+}
+
+.dock {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; border-top: 1px solid var(--line); background: var(--stage);
+  padding-block: 10px calc(10px + env(safe-area-inset-bottom, 0px)); padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.dock label { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+#say { flex: 1 1 220px; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+
+.sheet {
+  position: fixed; inset: 0; z-index: 10; background: color-mix(in srgb, var(--stage) 70%, transparent);
+  display: grid; place-items: center; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.card {
+  width: min(680px, 100%); max-height: 86%; overflow: auto; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 14px; padding: 20px; display: flex; flex-direction: column; gap: 14px;
+}
+.card h2 { margin: 0; font-size: 20px; }
+.card p { margin: 0; color: var(--dim); font-size: 14px; line-height: 1.5; }
+.card code { font-family: var(--mono); font-size: 12px; color: var(--ink); }
+#src { min-height: 300px; resize: vertical; background: var(--stage); border: 1px solid var(--line); border-radius: 8px; padding: 12px; font-size: 15px; line-height: 1.5; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.field { display: grid; grid-template-columns: 160px 1fr; gap: 10px; align-items: center; font-size: 14px; }
+.field select, .field input[type=range] { width: 100%; }
+select { background: var(--stage); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+.primary { background: var(--cue); border-color: var(--cue); color: #1a1406; font-weight: 700; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; }
+.stat { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.stat span { display: block; font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--dim); }
+.stat b { font-size: 24px; font-variant-numeric: tabular-nums; }
+#skips { margin: 0; padding-left: 18px; color: var(--ink); font-size: 14px; line-height: 1.5; }
+@media (max-width: 560px) {
+  :root { --size: 30px; }
+  .field { grid-template-columns: 1fr; }
+  .pace { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .ln, .w { transition: none; } }
+</style>
+
+<header class="bar">
+  <span class="brand">Elite Prompter</span>
+  <span class="pill" id="pill"><i></i><span id="state">Ready</span></span>
+  <span class="pace" id="pace">— wpm</span>
+  <button id="mic" type="button">Start voice</button>
+  <button id="edit" type="button">Script</button>
+  <button id="set" type="button">Settings</button>
+</header>
+
+<main id="stage">
+  <div id="scroll"><div id="text"></div></div>
+  <div class="guide"></div>
+  <div id="note" hidden></div>
+  <div id="banner" hidden><small>Waiting for you</small><b id="next"></b></div>
+</main>
+
+<footer class="dock">
+  <label for="say">Practice</label>
+  <input id="say" type="text" autocomplete="off" placeholder="Type what you would say and press Enter">
+  <button id="demo" type="button">Play demo</button>
+  <button id="reset" type="button">Back to top</button>
+</footer>
+
+<div class="sheet" id="editSheet" hidden>
+  <div class="card">
+    <h2>Script</h2>
+    <p>Paste your sermon or lesson. Lines starting with <code>#</code> are section titles. Cues in brackets show as signals and are never waited for: <code>[pause]</code> <code>[build]</code> <code>[softer]</code> <code>[slide]</code> <code>[verse: John 3:16]</code> <code>[ad-lib: story]</code>.</p>
+    <textarea id="src" spellcheck="false"></textarea>
+    <div class="row"><button id="sample" type="button">Load sample</button><button id="cancelEdit" type="button">Cancel</button><button id="saveEdit" class="primary" type="button">Use this script</button></div>
+  </div>
+</div>
+
+<div class="sheet" id="setSheet" hidden>
+  <div class="card">
+    <h2>Settings</h2>
+    <div class="field"><label for="size">Text size</label><input id="size" type="range" min="22" max="96" step="2"></div>
+    <div class="field"><label for="lang">Speech language</label>
+      <select id="lang">
+        <option value="en-NG">English (Nigeria)</option>
+        <option value="en-GH">English (Ghana)</option>
+        <option value="en-KE">English (Kenya)</option>
+        <option value="en-ZA">English (South Africa)</option>
+        <option value="en-US">English (US)</option>
+        <option value="en-GB">English (UK)</option>
+        <option value="fr-FR">French</option>
+        <option value="es-ES">Spanish</option>
+        <option value="pt-BR">Portuguese (Brazil)</option>
+      </select></div>
+    <div class="field"><label for="off">Wait after</label>
+      <select id="off">
+        <option value="3">3 off-script words (quick)</option>
+        <option value="4">4 off-script words</option>
+        <option value="6">6 off-script words</option>
+        <option value="8">8 off-script words (relaxed)</option>
+      </select></div>
+    <div class="field"><label for="mirror">Mirror for glass</label><select id="mirror"><option value="0">Off</option><option value="1">On</option></select></div>
+    <p>Shortcuts: Space starts or stops your voice. Up and down arrows move a line. Tap any word to jump there.</p>
+    <div class="row"><button id="closeSet" class="primary" type="button">Done</button></div>
+  </div>
+</div>
+
+<div class="sheet" id="repSheet" hidden>
+  <div class="card">
+    <h2>Session report</h2>
+    <div class="stats" id="stats"></div>
+    <div id="skipBox"><p>Skipped passages</p><ul id="skips"></ul></div>
+    <div class="row"><button id="closeRep" class="primary" type="button">Close</button></div>
+  </div>
+</div>
+
+<script>
+/*ENGINE*/
+
+const SAMPLE = `# Stewardship: what we are given
+Jesus is Lord, Jesus is coming back again. [pause]
+If you believe, you shall be saved. [build]
+Grace is not earned, it is received.
+Today we talk about stewardship, and what God has placed in your hands.
+[verse: Luke 16:10]
+Every good gift comes from above.
+What you have in your hand is a seed, not a burden.
+[ad-lib: a story from my first job]
+Faithful in little means faithful in much. [softer]
+So what does faithful look like with your paycheck? [slide]
+It starts with a plan.
+Give first, save second, and live on the rest.
+A budget is not a cage. It is a map.
+
+# Your plan this week
+Write down everything that came in this month.
+Write down everything that went out.
+Then ask one question: does my spending tell the story of what I believe?
+[pause]
+Let us pray.`;
+
+const DEMO = "Jesus is Lord Jesus is coming back again prodigal child come home the father is waiting for you tonight church if you believe you shall be saved grace is not earned it is received today we talk about stewardship";
+
+const $ = id => document.getElementById(id);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('ep.' + k); return v === null ? d : v; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem('ep.' + k, v); } catch (e) {} }
+};
+const cfg = {
+  script: store.get('script', SAMPLE),
+  size: +store.get('size', 0) || 0,
+  lang: store.get('lang', 'en-NG'),
+  off: +store.get('off', 4),
+  mirror: store.get('mirror', '0')
+};
+
+let words = [], spans = [], lineEls = [], lineOf = [], F = null;
+let shownPos = 0, cueLine = null, cueLeads = [];
+
+function build() {
+  const text = $('text');
+  text.textContent = '';
+  words = []; spans = []; lineEls = []; lineOf = [];
+  cfg.script.split('\n').forEach(raw => {
+    const line = raw.trim();
+    const div = document.createElement('div');
+    div.className = 'ln';
+    if (!line) { div.className = 'ln gap'; text.appendChild(div); return; }
+    if (line.startsWith('#')) { div.className = 'ln h'; div.textContent = line.replace(/^#+\s*/, ''); text.appendChild(div); return; }
+    const li = lineEls.length;
+    lineEls.push(div);
+    (line.match(/\[[^\]]*\]|\S+/g) || []).forEach(tok => {
+      if (tok.startsWith('[')) {
+        const inner = tok.slice(1, -1).trim();
+        const kind = inner.toLowerCase().split(/[:\s]/)[0].replace(/[^a-z]/g, '');
+        const chip = document.createElement('span');
+        chip.className = 'chip ' + (kind === 'adlib' ? 'adlib' : kind);
+        chip.textContent = inner;
+        div.appendChild(chip);
+        div.appendChild(document.createTextNode(' '));
+        return;
+      }
+      const s = document.createElement('span');
+      s.className = 'w';
+      s.textContent = tok;
+      s.dataset.i = words.length;
+      words.push(tok); spans.push(s); lineOf.push(li);
+      div.appendChild(s);
+      div.appendChild(document.createTextNode(' '));
+    });
+    text.appendChild(div);
+  });
+  F = createFollower(words, { offWords: cfg.off });
+  shownPos = 0; clearCue();
+  render(true);
+}
+
+function clearCue() {
+  if (cueLine) cueLine.classList.remove('cue');
+  cueLeads.forEach(s => s.classList.remove('lead'));
+  cueLine = null; cueLeads = [];
+}
+
+function render(force) {
+  const st = F.st, p = st.pos;
+  if (p !== shownPos || force) {
+    const a = Math.min(p, shownPos), b = Math.max(p, shownPos);
+    for (let i = force ? 0 : a; i < (force ? spans.length : b); i++) spans[i].classList.toggle('done', i < p);
+    shownPos = p;
+  }
+  const waiting = st.mode === 'waiting' && p < words.length;
+  $('stage').classList.toggle('waiting', waiting);
+  clearCue();
+  if (waiting) {
+    cueLine = lineEls[lineOf[p]];
+    cueLine.classList.add('cue');
+    for (let i = p; i < Math.min(p + 3, words.length) && lineOf[i] === lineOf[p]; i++) { spans[i].classList.add('lead'); cueLeads.push(spans[i]); }
+    $('next').textContent = words.slice(p, p + 5).join(' ') + (p + 5 < words.length ? ' …' : '');
+  }
+  $('banner').hidden = !waiting;
+  const pill = $('pill');
+  pill.classList.toggle('wait', waiting);
+  pill.classList.toggle('live', !waiting && (listening || practicing));
+  $('state').textContent = p >= words.length && words.length ? 'Finished' : waiting ? 'Waiting for you' : (listening || practicing) ? 'Following' : 'Ready';
+  aim();
+}
+
+// Smooth scrolling toward the reading line, one third down the stage.
+let targetTop = 0, animating = false;
+function aim() {
+  const i = Math.min(F.st.pos, spans.length - 1);
+  if (i < 0) return;
+  const sc = $('scroll');
+  targetTop = Math.max(0, spans[i].offsetTop - sc.clientHeight * 0.33 + spans[i].offsetHeight * 0.2);
+  if (!animating) { animating = true; requestAnimationFrame(step); }
+}
+function step() {
+  const sc = $('scroll');
+  const diff = targetTop - sc.scrollTop;
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (Math.abs(diff) < 1 || reduce) { sc.scrollTop = targetTop; animating = false; return; }
+  sc.scrollTop += diff * 0.12;
+  requestAnimationFrame(step);
+}
+
+// Heard words, shared by the microphone and practice mode.
+let finalTail = [], finalCount = 0, interim = [];
+const session = { start: 0, startPos: 0, advances: [] };
+function feed() {
+  const before = F.st.pos;
+  F.update(finalTail.concat(interim).slice(-6), finalCount + interim.length, Date.now());
+  if (F.st.pos > before) session.advances.push({ t: Date.now(), n: F.st.pos - before });
+  render(false);
+  pace();
+}
+function pushFinal(ws) { finalTail.push(...ws); finalCount += ws.length; if (finalTail.length > 30) finalTail = finalTail.slice(-30); }
+function pace() {
+  const now = Date.now();
+  session.advances = session.advances.filter(a => now - a.t < 15000);
+  const n = session.advances.reduce((s, a) => s + a.n, 0);
+  $('pace').textContent = n ? Math.round(n * 4) + ' wpm' : '— wpm';
+}
+function beginSession() {
+  if (session.start) return;
+  session.start = Date.now(); session.startPos = F.st.pos; session.advances = [];
+  F.st.adlibs = 0; F.st.adlibMs = 0; F.st.skipped = [];
+  finalTail = []; interim = []; finalCount = 0; F.st.lastMatchHeard = 0;
+}
+
+// Microphone.
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, listening = false, wake = null;
+function note(msg) { const n = $('note'); n.textContent = msg; n.hidden = !msg; }
+function startMic() {
+  if (!SR) { note('Voice-follow needs Chrome or Edge on a laptop or Android, or Safari on iPhone. Practice below works anywhere.'); return; }
+  rec = new SR();
+  rec.continuous = true; rec.interimResults = true; rec.lang = cfg.lang;
+  rec.onresult = e => {
+    interim = [];
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const ws = e.results[i][0].transcript.trim().split(/\s+/).filter(Boolean);
+      if (e.results[i].isFinal) pushFinal(ws); else interim.push(...ws);
+    }
+    feed();
+  };
+  rec.onerror = e => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      stopMic(false);
+      note('The microphone is blocked on this page. Open the Elite Prompter file in Chrome on your laptop or phone to use your voice. Practice below works here.');
+    } else if (e.error === 'network') {
+      note('Voice-follow needs an internet connection in this browser.');
+    }
+  };
+  rec.onend = () => { if (listening) { try { rec.start(); } catch (err) {} } };
+  try { rec.start(); } catch (err) { note('The microphone could not start. Reload the page and try again.'); return; }
+  listening = true; note('');
+  beginSession();
+  $('mic').textContent = 'Stop'; $('mic').classList.add('on');
+  try { navigator.wakeLock && navigator.wakeLock.request('screen').then(l => { wake = l; }).catch(() => {}); } catch (err) {}
+  render(false);
+}
+function stopMic(report) {
+  listening = false;
+  if (rec) { try { rec.stop(); } catch (err) {} rec = null; }
+  $('mic').textContent = 'Start voice'; $('mic').classList.remove('on');
+  if (wake) { wake.release().catch(() => {}); wake = null; }
+  render(false);
+  if (report) showReport();
+}
+$('mic').onclick = () => listening ? stopMic(true) : startMic();
+
+// Practice mode: typed words are fed at speaking pace (about 150 words a minute).
+let queue = [], practicing = false, timer = null;
+function practice(text) {
+  beginSession();
+  queue.push(...text.trim().split(/\s+/).filter(Boolean));
+  if (timer) return;
+  practicing = true;
+  timer = setInterval(() => {
+    const w = queue.shift();
+    if (!w) { clearInterval(timer); timer = null; practicing = false; render(false); return; }
+    pushFinal([w]); feed();
+  }, 400);
+}
+$('say').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.value.trim()) { practice(e.target.value); e.target.value = ''; }
+});
+$('demo').onclick = () => {
+  F.setPos(0); session.start = 0; queue = []; render(true);
+  note('Demo: reads two lines, steps away to "prodigal child, come home", then comes back with "Church, if you believe".');
+  practice(DEMO);
+  setTimeout(() => note(''), 9000);
+};
+$('reset').onclick = () => { queue = []; F.setPos(0); session.start = 0; render(true); if (listening) beginSession(); };
+
+$('text').addEventListener('click', e => {
+  const i = e.target.dataset && e.target.dataset.i;
+  if (i !== undefined) { F.setPos(+i); F.st.lastMatchHeard = finalCount + interim.length; render(false); }
+});
+document.addEventListener('keydown', e => {
+  if (e.target.matches('input, textarea, select') || !$('editSheet').hidden) return;
+  if (e.code === 'Space') { e.preventDefault(); listening ? stopMic(true) : startMic(); }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const li = lineOf[Math.min(F.st.pos, words.length - 1)] + (e.key === 'ArrowDown' ? 1 : -1);
+    const i = lineOf.indexOf(Math.max(0, li));
+    if (i >= 0) { F.setPos(i); F.st.lastMatchHeard = finalCount + interim.length; render(false); }
+  }
+});
+
+// Report after a voice session.
+function showReport() {
+  if (!session.start) return;
+  const mins = (Date.now() - session.start) / 60000;
+  const covered = F.st.pos - session.startPos;
+  const skippedWords = F.st.skipped.reduce((s, [a, b]) => s + (b - a + 1), 0);
+  const stats = [
+    ['Time', mins < 1 ? Math.round(mins * 60) + ' s' : mins.toFixed(1) + ' min'],
+    ['Script covered', Math.round(100 * F.st.pos / Math.max(1, words.length)) + '%'],
+    ['Average pace', mins > 0.1 ? Math.round((covered - skippedWords) / mins) + ' wpm' : '—'],
+    ['Times off script', String(F.st.adlibs)],
+    ['Time off script', Math.round(F.st.adlibMs / 1000) + ' s']
+  ];
+  $('stats').innerHTML = '';
+  stats.forEach(([k, v]) => { const d = document.createElement('div'); d.className = 'stat'; d.innerHTML = '<span></span><b></b>'; d.firstChild.textContent = k; d.lastChild.textContent = v; $('stats').appendChild(d); });
+  $('skips').innerHTML = '';
+  F.st.skipped.forEach(([a, b]) => { const li = document.createElement('li'); li.textContent = words.slice(a, Math.min(b + 1, a + 8)).join(' ') + (b - a > 7 ? ' …' : '') + ' (' + (b - a + 1) + ' words)'; $('skips').appendChild(li); });
+  $('skipBox').hidden = !F.st.skipped.length;
+  $('repSheet').hidden = false;
+  session.start = 0;
+}
+$('closeRep').onclick = () => { $('repSheet').hidden = true; };
+
+// Script editing and settings.
+$('edit').onclick = () => { $('src').value = cfg.script; $('editSheet').hidden = false; $('src').focus(); };
+$('cancelEdit').onclick = () => { $('editSheet').hidden = true; };
+$('sample').onclick = () => { $('src').value = SAMPLE; };
+$('saveEdit').onclick = () => { cfg.script = $('src').value; store.set('script', cfg.script); $('editSheet').hidden = true; build(); };
+$('set').onclick = () => { $('setSheet').hidden = false; };
+$('closeSet').onclick = () => { $('setSheet').hidden = true; };
+function applySize() {
+  const px = cfg.size || parseInt(getComputedStyle(document.documentElement).getPropertyValue('--size'), 10) || 44;
+  if (cfg.size) document.documentElement.style.setProperty('--size', cfg.size + 'px');
+  $('size').value = px;
+}
+$('size').oninput = e => { cfg.size = +e.target.value; store.set('size', cfg.size); applySize(); aim(); };
+$('lang').value = cfg.lang;
+$('lang').onchange = e => { cfg.lang = e.target.value; store.set('lang', cfg.lang); if (listening) { stopMic(false); startMic(); } };
+$('off').value = String(cfg.off);
+$('off').onchange = e => { cfg.off = +e.target.value; store.set('off', cfg.off); const p = F.st.pos; build(); F.setPos(p); render(true); };
+$('mirror').value = cfg.mirror;
+function applyMirror() { $('text').classList.toggle('mirror', cfg.mirror === '1'); }
+$('mirror').onchange = e => { cfg.mirror = e.target.value; store.set('mirror', cfg.mirror); applyMirror(); };
+window.addEventListener('resize', () => aim());
+
+applySize(); applyMirror(); build();
+</script>
