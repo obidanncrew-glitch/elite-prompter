@@ -2,7 +2,7 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>body{margin:0}[hidden]{display:none!important}</style>
 <title>Elite Prompter</title>
 <meta name="claude:viewport-fit-sides" content="cover">
-<meta name="theme-color" content="#0c0e11">
+<meta name="theme-color" content="#05070a">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Prompter">
 <link rel="manifest" href="manifest.webmanifest">
@@ -13,16 +13,18 @@
 /* Layout: a dark studio stage that fills the screen, a thin control bar on top,
    a reading line one third down, and a practice dock at the bottom. Single dark look, by choice. */
 :root {
-  --stage: #0c0e11;
-  --panel: #161a20;
-  --line: #272c34;
-  --ink: #f4efe4;
-  --dim: #8a909b;
-  --spoken: #4b515c;
-  --tally: #e5484d;
-  --cue: #f6b93b;
-  --calm: #6aa8ff;
-  --ok: #46c27a;
+  /* Strong colors: pure white words to read, gold for where you are and what's next,
+     green to go, red for live, and spoken words fade back into a cool grey-blue. */
+  --stage: #05070a;
+  --panel: #12161d;
+  --line: #2a313c;
+  --ink: #ffffff;
+  --dim: #a3abb8;
+  --spoken: #3d4757;
+  --tally: #ff3b47;
+  --cue: #ffc233;
+  --calm: #4da3ff;
+  --ok: #22d67e;
   --read: "Atkinson Hyperlegible", "Segoe UI", Roboto, Arial, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
   --size: 44px;
@@ -57,6 +59,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .pill.wait { color: var(--cue); border-color: color-mix(in srgb, var(--cue) 50%, var(--line)); }
 .pill.wait i { background: var(--cue); }
 .pace { font-family: var(--mono); font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; min-width: 64px; }
+#mic { background: var(--ok); border-color: var(--ok); color: #03140b; font-weight: 700; }
 #mic.on { background: var(--tally); border-color: var(--tally); color: #fff; }
 
 main { position: relative; flex: 1; min-height: 0; }
@@ -71,40 +74,47 @@ main { position: relative; flex: 1; min-height: 0; }
 }
 #text.mirror { transform: scaleX(-1); }
 .guide {
-  position: absolute; left: 0; right: 0; top: 33%; height: 0; border-top: 1px dashed var(--line); pointer-events: none;
+  position: absolute; left: 0; right: 0; top: 33%; height: 0; border-top: 2px solid color-mix(in srgb, var(--cue) 55%, transparent); pointer-events: none;
+}
+.guide::after {
+  content: ""; position: absolute; left: 0; right: 0; top: -1.1em; height: 2.4em; font-size: var(--size);
+  background: linear-gradient(transparent, color-mix(in srgb, var(--cue) 9%, transparent) 40%, color-mix(in srgb, var(--cue) 9%, transparent) 60%, transparent);
 }
 .guide::before {
   content: ""; position: absolute; left: max(6px, env(safe-area-inset-left, 0px)); top: -7px;
-  border: 7px solid transparent; border-left-color: var(--cue);
+  border: 9px solid transparent; border-left-color: var(--cue); top: -10px;
 }
 .ln { margin: 0 0 .35em; transition: opacity .4s; }
 .ln.h { font-family: var(--mono); font-size: .38em; font-weight: 500; letter-spacing: .1em; text-transform: uppercase; color: var(--dim); margin: 1.4em 0 .6em; }
 .ln.gap { height: .5em; }
 .w { cursor: pointer; transition: color .25s; }
 .w.done { color: var(--spoken); }
+/* The next word to say: gold underline so the eye always lands in the right place. */
+.w.now { color: var(--cue); text-decoration: underline; text-decoration-thickness: .08em; text-underline-offset: .18em; }
 .chip {
-  display: inline-block; vertical-align: .15em; font-family: var(--mono); font-weight: 500; font-size: .32em;
+  display: inline-block; vertical-align: .15em; font-family: var(--mono); font-weight: 700; font-size: .32em;
   letter-spacing: .06em; text-transform: uppercase; padding: .2em .55em; border-radius: 4px; margin: 0 .25em;
   border: 1px solid currentColor; color: var(--dim);
 }
 .chip.pause { color: var(--cue); }
 .chip.build { color: var(--tally); }
 .chip.softer { color: var(--calm); }
-.chip.verse { color: #d9c27a; }
+.chip.verse { color: #ffd76a; }
 .chip.adlib { display: block; width: fit-content; margin: .3em 0; color: var(--dim); border-style: dashed; }
 
 /* Waiting for you: everything settles back, the next words stand forward. */
-main.waiting .ln:not(.cue) { opacity: .28; }
-.ln.cue .w:not(.done) { color: color-mix(in srgb, var(--ink) 55%, transparent); }
+main.waiting .ln:not(.cue) { opacity: .22; }
+.ln.cue .w:not(.done) { color: color-mix(in srgb, var(--ink) 70%, transparent); }
+.ln.cue { background: color-mix(in srgb, var(--cue) 12%, transparent); border-radius: 8px; box-shadow: 0 0 0 .2em color-mix(in srgb, var(--cue) 12%, transparent); }
 .ln.cue .w.lead { color: var(--cue); }
 
 #banner {
   position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(14px + env(safe-area-inset-bottom, 0px));
-  width: min(560px, calc(100% - 32px)); background: var(--panel); border: 1px solid color-mix(in srgb, var(--cue) 45%, var(--line));
+  width: min(560px, calc(100% - 32px)); background: var(--cue); color: #1a1200; border: 0; box-shadow: 0 8px 30px rgba(0,0,0,.6);
   border-radius: 12px; padding: 12px 16px; display: flex; gap: 12px; align-items: baseline; z-index: 2;
 }
-#banner small { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--cue); white-space: nowrap; }
-#banner b { font-size: 20px; }
+#banner small { font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: #1a1200; opacity: .75; white-space: nowrap; }
+#banner b { font-size: 22px; }
 #note {
   position: absolute; top: 10px; left: 50%; transform: translateX(-50%); width: min(620px, calc(100% - 32px));
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; font-size: 14px; color: var(--ink); z-index: 2;
@@ -499,11 +509,15 @@ function clearCue() {
   cueLine = null; cueLeads = [];
 }
 
+let nowSpan = null;
 function render(force) {
   const st = F.st, p = st.pos;
   if (p !== shownPos || force) {
     const a = Math.min(p, shownPos), b = Math.max(p, shownPos);
     for (let i = force ? 0 : a; i < (force ? spans.length : b); i++) spans[i].classList.toggle('done', i < p);
+    if (nowSpan) nowSpan.classList.remove('now');
+    nowSpan = spans[p] || null;
+    if (nowSpan) nowSpan.classList.add('now');
     shownPos = p;
   }
   const waiting = st.mode === 'waiting' && p < words.length;
