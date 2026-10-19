@@ -544,24 +544,42 @@ $('prevSlide').onclick = () => setSlide(deck.slide - 1);
 $('nextSlide').onclick = () => setSlide(deck.slide + 1);
 fileGet('deck').then(b => b && openDeck(b)).catch(() => {});
 
-// Smooth scrolling toward the reading line, one third down the stage.
-let targetTop = 0, animating = false;
+// Smooth scrolling toward the reading line, one third down the stage. The target glides
+// through each line as its words are spoken (instead of hopping a line at a time), and a
+// critically damped spring moves the page toward it, so fast and slow speakers both get
+// one steady motion with no lurch at the start or snap at the end.
+let targetTop = 0, animating = false, curTop = 0, vel = 0, lastFrame = 0;
 function aim() {
-  const i = Math.min(F.st.pos, spans.length - 1);
-  if (i < 0) return;
+  const n = spans.length;
+  if (!n) return;
   const sc = $('scroll');
-  targetTop = Math.max(0, spans[i].offsetTop - sc.clientHeight * 0.33 + spans[i].offsetHeight * 0.2);
-  if (!animating) { animating = true; requestAnimationFrame(step); }
+  const i = Math.min(F.st.pos, n - 1);
+  const line = lineOf[i];
+  let first = i, last = i;
+  while (first > 0 && lineOf[first - 1] === line) first--;
+  while (last < n - 1 && lineOf[last + 1] === line) last++;
+  const top = spans[i].offsetTop, nextTop = last + 1 < n ? spans[last + 1].offsetTop : top;
+  // How far through this line the speaker is: 0 at its first word, nearly 1 at its last.
+  const frac = F.st.pos >= n ? 1 : (i - first) / (last - first + 1);
+  const y = top + (nextTop - top) * frac;
+  targetTop = Math.max(0, Math.min(sc.scrollHeight - sc.clientHeight, y - sc.clientHeight * 0.33 + spans[i].offsetHeight * 0.2));
+  if (!animating) { animating = true; curTop = sc.scrollTop; vel = 0; lastFrame = 0; requestAnimationFrame(step); }
 }
-function step() {
+function step(now) {
   const sc = $('scroll');
-  const diff = targetTop - sc.scrollTop;
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if (Math.abs(diff) < 2 || reduce) { sc.scrollTop = targetTop; animating = false; return; }
-  const before = sc.scrollTop;
-  sc.scrollTop += Math.sign(diff) * Math.max(2, Math.abs(diff) * 0.12);
-  // Phones round scroll positions; stop if the page can't move any further.
-  if (sc.scrollTop === before) { animating = false; return; }
+  // The user scrolled by hand: start from where they left it.
+  if (Math.abs(sc.scrollTop - curTop) > 3) { curTop = sc.scrollTop; vel = 0; }
+  const dt = lastFrame ? Math.min(0.05, (now - lastFrame) / 1000) : 1 / 60;
+  lastFrame = now;
+  const diff = targetTop - curTop;
+  if (reduce || (Math.abs(diff) < 0.5 && Math.abs(vel) < 5)) { sc.scrollTop = curTop = targetTop; vel = 0; animating = false; return; }
+  // A soft spring (it settles in about a second), so between words the page keeps
+  // drifting forward instead of stopping and starting again.
+  const w = 3.2;
+  vel += (w * w * diff - 2 * w * vel) * dt;
+  curTop += vel * dt;
+  sc.scrollTop = curTop;
   requestAnimationFrame(step);
 }
 
@@ -747,7 +765,10 @@ async function startLocal(keepNote) {
       try { await loadModel(); } finally { clearInterval(tick); }
     }
     if (!listening || !local || local.ctx !== ctx) { stream.getTracks().forEach(t => t.stop()); return; }
-    const r = new voskModel.KaldiRecognizer(ctx.sampleRate);
+    // Listening for the script's own words (plus "[unk]" for anything else) makes the small
+    // offline model far more accurate, at every speaking speed.
+    const vocab = [...new Set(words.map(norm).filter(w => w && !/\d/.test(w)))];
+    const r = new voskModel.KaldiRecognizer(ctx.sampleRate, JSON.stringify(vocab.concat('[unk]')));
     r.on('result', m => {
       const t = (m.result && m.result.text) || '';
       interim = []; lastPartial = '';

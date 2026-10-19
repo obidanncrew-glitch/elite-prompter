@@ -24,53 +24,95 @@ function same(a, b) {
   return false;
 }
 
+// Short words ("is", "a", "in") appear everywhere and are the first ones a speech engine
+// drops when someone talks fast, so they count for less than longer words.
+function weight(w) { return w.length >= 4 ? 1 : w.length === 3 ? 0.7 : 0.45; }
+
 function createFollower(words, opts) {
   const W = words.map(norm);
-  const o = Object.assign({ offWords: 4, ahead: 80 }, opts || {});
-  const st = { pos: 0, mode: 'following', lastMatchHeard: 0, skipped: [], adlibs: 0, adlibStart: 0, adlibMs: 0 };
+  const o = Object.assign({ offWords: 4, offMs: 1500, ahead: 80, tail: 8 }, opts || {});
+  const st = { pos: 0, mode: 'following', lastMatchHeard: 0, lastMatchAt: 0, skipped: [], adlibs: 0, adlibStart: 0, adlibMs: 0 };
 
-  // Length of the matched run that ends at script word e and at the last spoken word.
-  // Tolerates one filler word ("uh", "church") or one dropped script word at a time.
-  function run(tail, e) {
-    let i = tail.length - 1, j = e, m = 0, gaps = 0;
-    while (i >= 0 && j >= 0 && gaps <= 1) {
-      if (same(tail[i], W[j])) { m++; i--; j--; gaps = 0; }
-      else if (i > 0 && same(tail[i - 1], W[j])) { i--; gaps++; }
-      else if (j > 0 && same(tail[i], W[j - 1])) { j--; gaps++; }
-      else break;
+  // Local alignment of the heard words against the script near the current position.
+  // f[i] maps script word j to the best alignment in which heard word i is script word j.
+  // Script words the engine missed cost a little (more for long words), extra heard
+  // words such as fillers or "[unk]" cost a little more, and each match adds its weight.
+  // v scores the whole alignment (where is the speaker?). nv scores only the evidence for
+  // new progress: words already passed vouch for the next step but no more, so an ad-lib
+  // can't ride on the last sentence the speaker read.
+  function align(tail, from, to) {
+    const n = tail.length, f = [];
+    for (let i = 0; i < n; i++) {
+      const row = new Map();
+      for (let j = from; j <= to; j++) {
+        if (!same(tail[i], W[j])) continue;
+        const w = weight(W[j]);
+        let v = w, nv = w, m = 1, start = j;
+        for (let pi = i - 1; pi >= Math.max(0, i - 4); pi--) {
+          const h = i - pi - 1;
+          for (const [pj, c] of f[pi]) {
+            if (pj >= j || j - pj > 5) continue;
+            // A misheard word (heard "out" for "down") pairs one extra heard word with one
+            // missed script word and costs less than the two apart.
+            const sk = j - pj - 1, subs = Math.min(h, sk);
+            let miss = 0;
+            for (let k = pj + 1; k < j; k++) miss += W[k].length <= 3 ? 0.2 : 0.5;
+            const gap = subs * 0.4 + (h - subs) * 0.6 + (sk ? miss * (sk - subs) / sk : 0);
+            const t = c.v - gap + w;
+            if (t > v) v = t;
+            const tn = (pj < st.pos ? Math.min(c.nv, 1) : c.nv) - gap + w;
+            if (tn > nv) { nv = tn; m = c.m + 1; start = c.start; }
+          }
+        }
+        row.set(j, { v, nv, m, start });
+      }
+      f.push(row);
     }
-    return m;
+    return f;
   }
 
   function update(tailRaw, heardTotal, now) {
-    const tail = tailRaw.map(norm).filter(Boolean).slice(-6);
+    const tail = tailRaw.map(norm).filter(Boolean).slice(-o.tail);
     if (!tail.length) return st;
-    const last = tail[tail.length - 1];
+    const from = Math.max(0, st.pos - 6), to = Math.min(W.length - 1, st.pos + o.ahead);
+    const f = align(tail, from, to);
+    // The match must reach the newest heard word, or the one before it, because the very
+    // last word of a live result is often still being recognised.
+    const cands = [];
+    for (const [i, late] of [[tail.length - 1, 0], [tail.length - 2, 0.3]]) {
+      if (i < 0) continue;
+      for (const [e, c] of f[i]) {
+        const d = e - st.pos;
+        cands.push({ e, c, d, score: c.v - late - 0.04 * Math.max(0, d) - 0.2 * Math.max(0, -d), late });
+      }
+    }
+    // Take the most likely place; a step forward also needs enough new evidence.
+    cands.sort((x, y) => y.score - x.score);
     let best = null;
-    const from = Math.max(0, st.pos - 4), to = Math.min(W.length - 1, st.pos + o.ahead);
-    for (let e = from; e <= to; e++) {
-      if (!same(last, W[e])) continue;
-      const s = run(tail, e);
-      const d = e - st.pos;
-      let need = d <= 3 ? 2 : d <= 15 ? 3 : 4;
-      if (st.pos === 0 && e === 0) need = 1;
-      if (s < need) continue;
-      const score = s * 10 - Math.abs(d) * 0.5;
-      if (!best || score > best.score) best = { e, s, score };
+    for (const k of cands) {
+      if (k.e < st.pos) { if (k.c.v - k.late >= 1.4) { best = k; break; } continue; }
+      let need = k.d <= 3 ? 1.4 : k.d <= 8 ? 2 : k.d <= 15 ? 2.4 : 3.4;
+      if (st.pos === 0 && k.e === 0) need = 0.4;
+      // The closing words ("let us pray") have nothing after them to confirm them.
+      if (k.e === W.length - 1 && k.d <= 10) need = Math.min(need, 1.4);
+      if (k.c.nv - k.late >= need && (k.d <= 15 || k.c.m >= 3)) { best = { e: k.e, start: k.c.start }; break; }
     }
     if (best) {
       const newPos = best.e + 1;
       if (newPos > st.pos) {
-        const reentry = best.e - best.s + 1;
-        if (reentry - st.pos > 12) st.skipped.push([st.pos, reentry - 1]);
+        if (best.start - st.pos > 12) st.skipped.push([st.pos, best.start - 1]);
         st.pos = newPos;
       }
       st.lastMatchHeard = heardTotal;
+      st.lastMatchAt = now || 0;
       if (st.mode === 'waiting') {
         st.mode = 'following';
         st.adlibMs += (now || 0) - st.adlibStart;
       }
-    } else if (st.mode !== 'waiting' && heardTotal - st.lastMatchHeard >= o.offWords) {
+    } else if (st.mode !== 'waiting' && heardTotal - st.lastMatchHeard >= o.offWords &&
+               (now || 0) - st.lastMatchAt >= o.offMs) {
+      // Off script only after several unmatched words *and* a moment without a match,
+      // so one misheard phrase in a fast read doesn't flash the Return Cue.
       st.mode = 'waiting';
       st.adlibs++;
       st.adlibStart = now || 0;
