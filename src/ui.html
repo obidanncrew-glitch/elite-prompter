@@ -108,6 +108,7 @@ main.waiting .ln:not(.cue) { opacity: .28; }
   padding-block: 10px calc(10px + env(safe-area-inset-bottom, 0px)); padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
 }
 .dock label { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
+#heard { flex: 1 1 100%; min-height: 1.2em; font-family: var(--mono); font-size: 12px; color: var(--dim); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 #say { flex: 1 1 220px; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
 
 .sheet {
@@ -157,6 +158,7 @@ select { background: var(--stage); border: 1px solid var(--line); border-radius:
 </main>
 
 <footer class="dock">
+  <span id="heard" aria-live="polite"></span>
   <label for="say">Practice</label>
   <input id="say" type="text" autocomplete="off" placeholder="Type what you would say and press Enter">
   <button id="demo" type="button">Play demo</button>
@@ -334,8 +336,11 @@ function step() {
   const sc = $('scroll');
   const diff = targetTop - sc.scrollTop;
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if (Math.abs(diff) < 1 || reduce) { sc.scrollTop = targetTop; animating = false; return; }
-  sc.scrollTop += diff * 0.12;
+  if (Math.abs(diff) < 2 || reduce) { sc.scrollTop = targetTop; animating = false; return; }
+  const before = sc.scrollTop;
+  sc.scrollTop += Math.sign(diff) * Math.max(2, Math.abs(diff) * 0.12);
+  // Phones round scroll positions; stop if the page can't move any further.
+  if (sc.scrollTop === before) { animating = false; return; }
   requestAnimationFrame(step);
 }
 
@@ -367,29 +372,67 @@ function beginSession() {
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let rec = null, listening = false, wake = null;
 function note(msg) { const n = $('note'); n.textContent = msg; n.hidden = !msg; }
+let lastFinal = '', restarts = [], heardAny = false;
+function heard(text) { $('heard').textContent = text ? 'Heard: ' + text : ''; }
 function startMic() {
   if (!SR) { note('Voice-follow needs Chrome or Edge on a laptop or Android, or Safari on iPhone. Practice below works anywhere.'); return; }
   rec = new SR();
   rec.continuous = true; rec.interimResults = true; rec.lang = cfg.lang;
   rec.onresult = e => {
+    heardAny = true;
     interim = [];
+    let shown = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
-      const ws = e.results[i][0].transcript.trim().split(/\s+/).filter(Boolean);
-      if (e.results[i].isFinal) pushFinal(ws); else interim.push(...ws);
+      let text = e.results[i][0].transcript.trim();
+      shown = text;
+      if (e.results[i].isFinal) {
+        // Some phones repeat the earlier words in each new result; keep only what is new.
+        if (lastFinal && text.toLowerCase().startsWith(lastFinal.toLowerCase())) text = text.slice(lastFinal.length);
+        else lastFinal = '';
+        lastFinal = (lastFinal + ' ' + text).trim();
+        pushFinal(text.split(/\s+/).filter(Boolean));
+      } else {
+        interim.push(...text.split(/\s+/).filter(Boolean));
+      }
     }
+    heard(shown.split(/\s+/).slice(-8).join(' '));
     feed();
   };
   rec.onerror = e => {
     if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
       stopMic(false);
-      note('The microphone is blocked on this page. Open the Elite Prompter file in Chrome on your laptop or phone to use your voice. Practice below works here.');
+      note('The microphone is blocked. Allow the microphone for this site in your browser settings, then tap Start voice again. Practice below works without it.');
+    } else if (e.error === 'language-not-supported') {
+      stopMic(false);
+      cfg.lang = 'en-US'; store.set('lang', cfg.lang); $('lang').value = cfg.lang;
+      note('This phone does not support that speech language, so it was switched to English (US). Tap Start voice again.');
+    } else if (e.error === 'audio-capture') {
+      stopMic(false);
+      note('No microphone was found. Check that no other app is using it, then tap Start voice again.');
     } else if (e.error === 'network') {
+      stopMic(false);
       note('Voice-follow needs an internet connection in this browser.');
     }
   };
-  rec.onend = () => { if (listening) { try { rec.start(); } catch (err) {} } };
+  // The browser stops listening every so often; start again after a short rest.
+  // If it keeps stopping without hearing anything, give up instead of looping.
+  rec.onend = () => {
+    if (!listening) return;
+    const now = Date.now();
+    restarts = restarts.filter(t => now - t < 10000);
+    restarts.push(now);
+    if (restarts.length > 6 && !heardAny) {
+      stopMic(false);
+      note('The microphone keeps stopping on this phone. Reload the page and try again, or use Chrome.');
+      return;
+    }
+    heardAny = false;
+    lastFinal = '';
+    setTimeout(() => { if (listening && rec) { try { rec.start(); } catch (err) {} } }, 300);
+  };
   try { rec.start(); } catch (err) { note('The microphone could not start. Reload the page and try again.'); return; }
-  listening = true; note('');
+  listening = true; note(''); restarts = []; heardAny = false; lastFinal = '';
+  heard('listening…');
   beginSession();
   $('mic').textContent = 'Stop'; $('mic').classList.add('on');
   try { navigator.wakeLock && navigator.wakeLock.request('screen').then(l => { wake = l; }).catch(() => {}); } catch (err) {}
@@ -397,7 +440,8 @@ function startMic() {
 }
 function stopMic(report) {
   listening = false;
-  if (rec) { try { rec.stop(); } catch (err) {} rec = null; }
+  if (rec) { const r = rec; rec = null; r.onend = null; try { r.abort(); } catch (err) {} }
+  heard('');
   $('mic').textContent = 'Start voice'; $('mic').classList.remove('on');
   if (wake) { wake.release().catch(() => {}); wake = null; }
   render(false);
