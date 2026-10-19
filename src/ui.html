@@ -127,6 +127,8 @@ main.waiting .ln:not(.cue) { opacity: .28; }
 .sb-btns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .sb-btns button { padding: 6px 10px; }
 .filebtn { display: inline-block; background: var(--cue); color: #1a1406; font-weight: 700; border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+.made { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+#fmtPreview { max-height: 180px; max-width: 100%; width: auto; border-radius: 6px; border: 1px solid var(--line); justify-self: start; }
 #deckStatus { font-size: 13px; color: var(--dim); align-self: center; }
 #say { flex: 1 1 220px; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
 
@@ -207,7 +209,14 @@ select { background: var(--stage); border: 1px solid var(--line); border-radius:
 <div class="sheet" id="deckSheet" hidden>
   <div class="card">
     <h2>Slides</h2>
-    <p>In PowerPoint, Keynote or Google Slides, save or download your slides as a PDF, then load it here. Put <code>[slide]</code> in your script wherever the next slide should appear, and it changes by itself when you get there. A clicker or the arrow keys work too.</p>
+    <p>Put <code>[slide]</code> in your script wherever the next slide should appear, and it changes by itself when you get there. A clicker or the arrow keys work too.</p>
+    <div id="madeBox" class="made">
+      <p><b>Make slides from your script.</b> Write the slide's words in the cue, like <code>[slide: Grace is received | Ephesians 2:8]</code>. The part after <code>|</code> is the smaller line. The first slide uses your first <code>#</code> title.</p>
+      <div class="field"><label for="fmt">Frame format</label><select id="fmt"></select></div>
+      <div class="field"><label for="theme">Look</label><select id="theme"></select></div>
+      <img id="fmtPreview" alt="Preview of your first slide" hidden>
+    </div>
+    <p><b>Or use slides you already have.</b> In PowerPoint, Keynote or Google Slides, save or download them as a PDF and load it here. They keep the shape you chose there.</p>
     <div class="row" style="justify-content:flex-start"><label class="filebtn" for="deckFile">Load slides (PDF)</label><input id="deckFile" type="file" accept="application/pdf,.pdf" hidden><span id="deckStatus"></span></div>
     <p><b>Audience screen</b> opens your slides in their own window with smooth transitions. Drag it onto the projector or TV and click it for full screen. In Zoom or Teams, share that window only, and your prompter stays private.</p>
     <div class="row"><button id="clearDeck" type="button">Remove slides</button><button id="openAud" type="button">Open audience screen</button><button id="closeDeck" class="primary" type="button">Done</button></div>
@@ -261,20 +270,21 @@ select { background: var(--stage); border: 1px solid var(--line); border-radius:
   </div>
 </div>
 
+<script src="slides.js"></script>
 <script>
 /*ENGINE*/
 
 const SAMPLE = `# Stewardship: what we are given
 Jesus is Lord, Jesus is coming back again. [pause]
 If you believe, you shall be saved. [build]
-Grace is not earned, it is received. [slide]
+Grace is not earned, it is received. [slide: Grace is received | Ephesians 2:8]
 Today we talk about stewardship, and what God has placed in your hands.
 [verse: Luke 16:10]
 Every good gift comes from above.
 What you have in your hand is a seed, not a burden.
 [ad-lib: a story from my first job]
 Faithful in little means faithful in much. [softer]
-So what does faithful look like with your paycheck? [slide]
+So what does faithful look like with your paycheck? [slide: Faithful with your paycheck | Give first · Save second · Live on the rest]
 It starts with a plan.
 Give first, save second, and live on the rest.
 A budget is not a cage. It is a map.
@@ -299,22 +309,25 @@ const cfg = {
   lang: store.get('lang', 'en-NG'),
   off: +store.get('off', 4),
   mirror: store.get('mirror', '0'),
-  engine: store.get('engine', 'auto')
+  engine: store.get('engine', 'auto'),
+  fmt: store.get('fmt', '16:9'),
+  theme: store.get('theme', 'night')
 };
 
-let words = [], spans = [], lineEls = [], lineOf = [], slideCues = [], F = null;
+let words = [], spans = [], lineEls = [], lineOf = [], slideCues = [], madeSlides = [], F = null;
 let shownPos = 0, cueLine = null, cueLeads = [];
 
 function build() {
   const text = $('text');
   text.textContent = '';
-  words = []; spans = []; lineEls = []; lineOf = []; slideCues = [];
+  words = []; spans = []; lineEls = []; lineOf = []; slideCues = []; madeSlides = [];
+  let firstHeading = '';
   cfg.script.split('\n').forEach(raw => {
     const line = raw.trim();
     const div = document.createElement('div');
     div.className = 'ln';
     if (!line) { div.className = 'ln gap'; text.appendChild(div); return; }
-    if (line.startsWith('#')) { div.className = 'ln h'; div.textContent = line.replace(/^#+\s*/, ''); text.appendChild(div); return; }
+    if (line.startsWith('#')) { firstHeading = firstHeading || line.replace(/^#+\s*/, ''); div.className = 'ln h'; div.textContent = line.replace(/^#+\s*/, ''); text.appendChild(div); return; }
     const li = lineEls.length;
     lineEls.push(div);
     (line.match(/\[[^\]]*\]|\S+/g) || []).forEach(tok => {
@@ -324,7 +337,11 @@ function build() {
         const chip = document.createElement('span');
         chip.className = 'chip ' + (kind === 'adlib' ? 'adlib' : kind);
         chip.textContent = inner;
-        if (kind === 'slide') slideCues.push(words.length);
+        if (kind === 'slide') {
+          slideCues.push(words.length);
+          const made = typeof parseSlideCue === 'function' ? parseSlideCue(inner) : null;
+          if (made) madeSlides.push(made);
+        }
         div.appendChild(chip);
         div.appendChild(document.createTextNode(' '));
         return;
@@ -339,8 +356,10 @@ function build() {
     });
     text.appendChild(div);
   });
+  if (madeSlides.length) madeSlides.unshift({ title: firstHeading || 'Welcome', sub: '' });
   F = createFollower(words, { offWords: cfg.off });
   shownPos = 0; clearCue(); cuesPassed = 0;
+  if (typeof refreshDeck === 'function') refreshDeck();
   render(true);
 }
 
@@ -379,7 +398,8 @@ function render(force) {
 // Presentation mode. Slides come from a PDF (PowerPoint: File, Save as PDF), kept in
 // this browser's storage so they work offline. The audience screen is a second window
 // on the same device and follows the slide number sent over a BroadcastChannel.
-const deck = { pdf: null, count: 0, slide: 1, thumbs: new Map() };
+const deck = { pdf: null, kind: '', count: 0, slide: 1, thumbs: new Map() };
+let savedMade = '';
 let cuesPassed = 0;
 const stageChannel = 'BroadcastChannel' in window ? new BroadcastChannel('elite-stage') : null;
 function idb() {
@@ -412,12 +432,36 @@ function loadAnyScript(src) {
 async function openDeck(blob) {
   const lib = await pdfLib();
   deck.pdf = await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
-  deck.count = deck.pdf.numPages; deck.thumbs.clear();
-  setSlide(Math.min(deck.slide, deck.count), true);
+  refreshDeck();
+}
+// Slides from a PDF win; otherwise slides are made from [slide: …] lines in the script.
+function refreshDeck() {
+  deck.thumbs.clear();
+  if (deck.pdf) { deck.kind = 'pdf'; deck.count = deck.pdf.numPages; }
+  else if (madeSlides.length > 1) { deck.kind = 'made'; deck.count = madeSlides.length; }
+  else { deck.kind = ''; deck.count = 0; }
+  if (deck.kind === 'made') {
+    const data = JSON.stringify({ slides: madeSlides, format: cfg.fmt, theme: cfg.theme });
+    if (data !== savedMade) {
+      savedMade = data;
+      filePut('made', JSON.parse(data)).then(() => stageChannel && stageChannel.postMessage({ type: 'deck' })).catch(() => {});
+    }
+  }
+  if (deck.count) setSlide(Math.min(deck.slide, deck.count), true); else showSlideBar();
+  if (!$('deckSheet').hidden) deckStatus();
 }
 async function thumb(n) {
-  if (!deck.pdf || n < 1 || n > deck.count) return null;
+  if (!deck.count || n < 1 || n > deck.count) return null;
   if (deck.thumbs.has(n)) return deck.thumbs.get(n);
+  if (deck.kind === 'made') {
+    const sz = slideSize(cfg.fmt, 320, 320);
+    const c = document.createElement('canvas');
+    c.width = sz.w; c.height = sz.h;
+    drawSlide(c.getContext('2d'), sz.w, sz.h, madeSlides[n - 1], cfg.theme);
+    const url = c.toDataURL('image/jpeg', 0.85);
+    deck.thumbs.set(n, url);
+    return url;
+  }
   const page = await deck.pdf.getPage(n);
   const v = page.getViewport({ scale: 1 });
   const scale = 320 / v.width;
@@ -472,8 +516,11 @@ async function loadDeckFile(file) {
   }
 }
 function deckStatus() {
-  $('deckStatus').textContent = deck.count ? deck.count + ' slides loaded.' : 'No slides loaded yet.';
-  $('openAud').disabled = !deck.count; $('clearDeck').disabled = !deck.count;
+  $('deckStatus').textContent = deck.kind === 'pdf' ? deck.count + ' slides loaded from your PDF.'
+    : deck.kind === 'made' ? deck.count + ' slides made from your script.' : 'No slides yet.';
+  $('openAud').disabled = !deck.count; $('clearDeck').disabled = deck.kind !== 'pdf';
+  $('madeBox').hidden = deck.kind === 'pdf';
+  thumb(1).then(u => { $('fmtPreview').src = u || ''; $('fmtPreview').hidden = !u; });
 }
 function openAudience() {
   const w = window.open('audience.html', 'elite-audience', 'popup,width=1280,height=720');
@@ -484,7 +531,12 @@ $('closeDeck').onclick = () => { $('deckSheet').hidden = true; };
 $('deckFile').onchange = e => loadDeckFile(e.target.files[0]);
 $('openAud').onclick = openAudience;
 $('openAud2').onclick = openAudience;
-$('clearDeck').onclick = async () => { await filePut('deck', null); deck.pdf = null; deck.count = 0; deck.thumbs.clear(); deckStatus(); showSlideBar(); if (stageChannel) stageChannel.postMessage({ type: 'deck' }); };
+$('clearDeck').onclick = async () => { await filePut('deck', null); deck.pdf = null; savedMade = ''; refreshDeck(); deckStatus(); if (stageChannel) stageChannel.postMessage({ type: 'deck' }); };
+Object.entries(typeof SLIDE_FORMATS === 'object' ? SLIDE_FORMATS : {}).forEach(([k, v]) => $('fmt').add(new Option(v.label, k)));
+Object.entries(typeof SLIDE_THEMES === 'object' ? SLIDE_THEMES : {}).forEach(([k, v]) => $('theme').add(new Option(v.label, k)));
+$('fmt').value = cfg.fmt; $('theme').value = cfg.theme;
+$('fmt').onchange = e => { cfg.fmt = e.target.value; store.set('fmt', cfg.fmt); refreshDeck(); deckStatus(); };
+$('theme').onchange = e => { cfg.theme = e.target.value; store.set('theme', cfg.theme); refreshDeck(); deckStatus(); };
 $('prevSlide').onclick = () => setSlide(deck.slide - 1);
 $('nextSlide').onclick = () => setSlide(deck.slide + 1);
 fileGet('deck').then(b => b && openDeck(b)).catch(() => {});

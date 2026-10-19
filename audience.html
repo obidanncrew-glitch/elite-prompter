@@ -3,6 +3,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Elite Prompter · Audience</title>
 <meta name="theme-color" content="#000000">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap">
 <style>
 /* The audience screen: slides only, on black, with a soft crossfade between them. */
 :root { --bg: #000; --dim: #8a909b; --cue: #f6b93b; color-scheme: dark; }
@@ -28,28 +29,30 @@ body.idle #hint { opacity: 0; }
 </div>
 <div id="hint">Click for full screen</div>
 <script src="vendor/pdfjs/pdf.min.js"></script>
+<script src="slides.js"></script>
 <script>
 const lib = window.pdfjsLib || window['pdfjs-dist/build/pdf'];
 lib.GlobalWorkerOptions.workerSrc = 'vendor/pdfjs/pdf.worker.min.js';
 const canvases = [document.getElementById('a'), document.getElementById('b')];
-let front = 0, pdf = null, current = 0, drawing = Promise.resolve();
+let front = 0, pdf = null, made = null, current = 0, drawing = Promise.resolve();
 const channel = new BroadcastChannel('elite-stage');
 
-function getDeck() {
+function getDeck(key) {
   return new Promise(res => {
     const r = indexedDB.open('elite-prompter', 1);
     r.onupgradeneeded = () => r.result.createObjectStore('files');
     r.onerror = () => res(null);
     r.onsuccess = () => {
-      const q = r.result.transaction('files').objectStore('files').get('deck');
+      const q = r.result.transaction('files').objectStore('files').get(key);
       q.onsuccess = () => res(q.result || null); q.onerror = () => res(null);
     };
   });
 }
 async function loadDeck() {
-  const blob = await getDeck();
+  const blob = await getDeck('deck');
   pdf = blob ? await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise : null;
-  document.getElementById('wait').hidden = !!pdf;
+  made = pdf ? null : await getDeck('made');
+  document.getElementById('wait').hidden = !!(pdf || made);
   canvases.forEach(c => c.classList.remove('on'));
   current = 0;
   channel.postMessage({ type: 'hello' });
@@ -57,13 +60,26 @@ async function loadDeck() {
 // Draw the next slide on the hidden canvas, then fade it in over the current one.
 function show(n, redraw) {
   drawing = drawing.then(async () => {
-    if (!pdf || n < 1 || n > pdf.numPages || (n === current && !redraw)) return;
+    const count = pdf ? pdf.numPages : made ? made.slides.length : 0;
+    if (!count || n < 1 || n > count || (n === current && !redraw)) return;
+    const ratio = window.devicePixelRatio || 1;
+    const back = canvases[1 - front];
+    if (made) {
+      if (document.fonts) await document.fonts.ready;
+      const sz = slideSize(made.format, innerWidth, innerHeight);
+      back.width = sz.w * ratio; back.height = sz.h * ratio;
+      back.style.width = sz.w + 'px'; back.style.height = sz.h + 'px';
+      const ctx = back.getContext('2d');
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      drawSlide(ctx, sz.w, sz.h, made.slides[n - 1], made.theme);
+      back.classList.add('on'); canvases[front].classList.remove('on');
+      front = 1 - front; current = n;
+      return;
+    }
     const page = await pdf.getPage(n);
     const base = page.getViewport({ scale: 1 });
-    const ratio = window.devicePixelRatio || 1;
     const scale = Math.min(innerWidth / base.width, innerHeight / base.height);
     const vp = page.getViewport({ scale: scale * ratio });
-    const back = canvases[1 - front];
     back.width = vp.width; back.height = vp.height;
     back.style.width = (vp.width / ratio) + 'px'; back.style.height = (vp.height / ratio) + 'px';
     await page.render({ canvasContext: back.getContext('2d'), viewport: vp }).promise;
