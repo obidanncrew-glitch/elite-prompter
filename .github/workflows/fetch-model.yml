@@ -1,0 +1,31 @@
+# Downloads the small English Vosk model and stores it in the repo as
+# models/en-us.tar.gz (with its top folder, which the engine strips on unpack).
+name: Fetch speech model
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/fetch-model.yml']
+permissions:
+  contents: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and repack the model
+        run: |
+          set -euo pipefail
+          curl -fsSL -o model.zip https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+          unzip -q model.zip
+          mkdir -p models
+          tar -czf models/en-us.tar.gz vosk-model-small-en-us-0.15
+          ls -la models
+      - name: Commit the model
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+          git add models/en-us.tar.gz
+          git diff --cached --quiet && exit 0
+          git commit -m "Add small English speech model for on-device listening"
+          git push

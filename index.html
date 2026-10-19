@@ -2,6 +2,11 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>body{margin:0}[hidden]{display:none!important}</style>
 <title>Elite Prompter</title>
 <meta name="claude:viewport-fit-sides" content="cover">
+<meta name="theme-color" content="#0c0e11">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Prompter">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
@@ -181,6 +186,12 @@ select { background: var(--stage); border: 1px solid var(--line); border-radius:
   <div class="card">
     <h2>Settings</h2>
     <div class="field"><label for="size">Text size</label><input id="size" type="range" min="22" max="96" step="2"></div>
+    <div class="field"><label for="engine">Listening</label>
+      <select id="engine">
+        <option value="auto">Automatic (recommended)</option>
+        <option value="browser">Browser speech (Chrome, Edge, Safari)</option>
+        <option value="local">On-device (any browser, English only)</option>
+      </select></div>
     <div class="field"><label for="lang">Speech language</label>
       <select id="lang">
         <option value="en-NG">English (Nigeria)</option>
@@ -201,6 +212,7 @@ select { background: var(--stage); border: 1px solid var(--line); border-radius:
         <option value="8">8 off-script words (relaxed)</option>
       </select></div>
     <div class="field"><label for="mirror">Mirror for glass</label><select id="mirror"><option value="0">Off</option><option value="1">On</option></select></div>
+    <p>Automatic uses your browser's own speech recognition where it works well, and switches to the on-device engine where it doesn't. The on-device engine downloads once (about 40 MB), then works without internet. Speech language applies to browser speech only.</p>
     <p>Shortcuts: Space starts or stops your voice. Up and down arrows move a line. Tap any word to jump there.</p>
     <div class="row"><button id="closeSet" class="primary" type="button">Done</button></div>
   </div>
@@ -334,7 +346,8 @@ const cfg = {
   size: +store.get('size', 0) || 0,
   lang: store.get('lang', 'en-NG'),
   off: +store.get('off', 4),
-  mirror: store.get('mirror', '0')
+  mirror: store.get('mirror', '0'),
+  engine: store.get('engine', 'auto')
 };
 
 let words = [], spans = [], lineEls = [], lineOf = [], F = null;
@@ -459,8 +472,8 @@ let rec = null, listening = false, wake = null;
 function note(msg) { const n = $('note'); n.textContent = msg; n.hidden = !msg; }
 let lastFinal = '', restarts = [], heardAny = false;
 function heard(text) { $('heard').textContent = text ? 'Heard: ' + text : ''; }
-function startMic() {
-  if (!SR) { note('Voice-follow needs Chrome or Edge on a laptop or Android, or Safari on iPhone. Practice below works anywhere.'); return; }
+function startBrowser() {
+  if (!SR) { note('This browser has no speech recognition. Switch Listening to On-device or Automatic in Settings.'); return; }
   rec = new SR();
   rec.continuous = true; rec.interimResults = true; rec.lang = cfg.lang;
   rec.onresult = e => {
@@ -484,7 +497,11 @@ function startMic() {
     feed();
   };
   rec.onerror = e => {
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+    if (e.error === 'service-not-allowed') {
+      stopMic(false);
+      if (fallBack('This browser does not offer speech recognition')) return;
+      note('Speech recognition is turned off in this browser. Switch Listening to On-device in Settings.');
+    } else if (e.error === 'not-allowed') {
       stopMic(false);
       note('The microphone is blocked. Allow the microphone for this site in your browser settings, then tap Start voice again. Practice below works without it.');
     } else if (e.error === 'language-not-supported') {
@@ -496,6 +513,7 @@ function startMic() {
       note('No microphone was found. Check that no other app is using it, then tap Start voice again.');
     } else if (e.error === 'network') {
       stopMic(false);
+      if (fallBack('Browser speech needs internet')) return;
       note('Voice-follow needs an internet connection in this browser.');
     }
   };
@@ -508,7 +526,8 @@ function startMic() {
     restarts.push(now);
     if (restarts.length > 6 && !heardAny) {
       stopMic(false);
-      note('The microphone keeps stopping on this phone. Reload the page and try again, or use Chrome.');
+      if (fallBack('The browser speech kept stopping on this device')) return;
+      note('The microphone keeps stopping on this phone. Reload the page and try again, or switch Listening to On-device in Settings.');
       return;
     }
     heardAny = false;
@@ -523,9 +542,95 @@ function startMic() {
   try { navigator.wakeLock && navigator.wakeLock.request('screen').then(l => { wake = l; }).catch(() => {}); } catch (err) {}
   render(false);
 }
+
+// On-device listening: the Vosk engine runs inside the page, so it works in any
+// modern browser and offline once its English model has been downloaded.
+let local = null, voskModel = null, lastPartial = '';
+function engineToUse() {
+  if (cfg.engine === 'local' || !SR) return 'local';
+  return 'browser';
+}
+function fallBack(reason) {
+  if (cfg.engine !== 'auto') return false;
+  note(reason + ', so Elite Prompter switched to on-device listening.');
+  startLocal(true);
+  return true;
+}
+function startMic() {
+  if (engineToUse() === 'local') startLocal(false); else startBrowser();
+}
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    if (window.Vosk) return res();
+    const s = document.createElement('script');
+    s.src = src; s.onload = res; s.onerror = () => rej(new Error('script'));
+    document.head.appendChild(s);
+  });
+}
+async function startLocal(keepNote) {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    note('This browser cannot use the microphone. Try Chrome, Safari, Edge or Firefox.');
+    return;
+  }
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new Ctx();
+  local = { ctx };
+  listening = true;
+  beginSession();
+  $('mic').textContent = 'Stop'; $('mic').classList.add('on');
+  if (!keepNote) note('');
+  heard(voskModel ? 'starting…' : 'getting on-device listening ready (first time downloads about 40 MB)…');
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
+    local.stream = stream;
+    if (!voskModel) {
+      await loadScript('vendor/vosk.js');
+      voskModel = await Vosk.createModel(new URL('models/en-us.tar.gz', location.href).href);
+    }
+    if (!listening || !local || local.ctx !== ctx) { stream.getTracks().forEach(t => t.stop()); return; }
+    const r = new voskModel.KaldiRecognizer(ctx.sampleRate);
+    r.on('result', m => {
+      const t = (m.result && m.result.text) || '';
+      interim = []; lastPartial = '';
+      if (t) { pushFinal(t.split(/\s+/)); heard(t.split(/\s+/).slice(-8).join(' ')); feed(); }
+    });
+    r.on('partialresult', m => {
+      const t = (m.result && m.result.partial) || '';
+      if (t === lastPartial) return;
+      lastPartial = t;
+      interim = t ? t.split(/\s+/) : [];
+      if (t) { heard(t.split(/\s+/).slice(-8).join(' ')); feed(); }
+    });
+    const src = ctx.createMediaStreamSource(stream);
+    const node = ctx.createScriptProcessor(4096, 1, 1);
+    node.onaudioprocess = e => { try { r.acceptWaveform(e.inputBuffer); } catch (err) {} };
+    src.connect(node); node.connect(ctx.destination);
+    Object.assign(local, { r, src, node });
+    await ctx.resume();
+    heard('listening on this device…');
+    try { navigator.wakeLock && navigator.wakeLock.request('screen').then(l => { wake = l; }).catch(() => {}); } catch (err) {}
+    render(false);
+  } catch (err) {
+    const denied = err && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
+    stopMic(false);
+    note(denied
+      ? 'The microphone is blocked. Allow the microphone for this site in your browser settings, then tap Start voice again.'
+      : 'On-device listening could not start. Check your internet connection for the first download, then try again.');
+  }
+}
+function stopLocal() {
+  if (!local) return;
+  const l = local; local = null;
+  try { l.node && (l.node.onaudioprocess = null, l.node.disconnect()); } catch (err) {}
+  try { l.src && l.src.disconnect(); } catch (err) {}
+  try { l.r && l.r.remove(); } catch (err) {}
+  try { l.stream && l.stream.getTracks().forEach(t => t.stop()); } catch (err) {}
+  try { l.ctx && l.ctx.close(); } catch (err) {}
+}
 function stopMic(report) {
   listening = false;
   if (rec) { const r = rec; rec = null; r.onend = null; try { r.abort(); } catch (err) {} }
+  stopLocal();
   heard('');
   $('mic').textContent = 'Start voice'; $('mic').classList.remove('on');
   if (wake) { wake.release().catch(() => {}); wake = null; }
@@ -613,12 +718,17 @@ $('lang').value = cfg.lang;
 $('lang').onchange = e => { cfg.lang = e.target.value; store.set('lang', cfg.lang); if (listening) { stopMic(false); startMic(); } };
 $('off').value = String(cfg.off);
 $('off').onchange = e => { cfg.off = +e.target.value; store.set('off', cfg.off); const p = F.st.pos; build(); F.setPos(p); render(true); };
+$('engine').value = cfg.engine;
+$('engine').onchange = e => { cfg.engine = e.target.value; store.set('engine', cfg.engine); if (listening) { stopMic(false); startMic(); } };
 $('mirror').value = cfg.mirror;
 function applyMirror() { $('text').classList.toggle('mirror', cfg.mirror === '1'); }
 $('mirror').onchange = e => { cfg.mirror = e.target.value; store.set('mirror', cfg.mirror); applyMirror(); };
 window.addEventListener('resize', () => aim());
 
 applySize(); applyMirror(); build();
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
 </script>
 
 </body></html>
