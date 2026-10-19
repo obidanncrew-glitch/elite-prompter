@@ -116,6 +116,7 @@ main.waiting .ln:not(.cue) { opacity: .28; }
 }
 .dock label { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--dim); }
 #heard { flex: 1 1 100%; min-height: 1.2em; font-family: var(--mono); font-size: 12px; color: var(--dim); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.offline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; color: var(--dim); }
 #say { flex: 1 1 220px; min-width: 0; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
 
 .sheet {
@@ -212,7 +213,9 @@ select { background: var(--stage); border: 1px solid var(--line); border-radius:
         <option value="8">8 off-script words (relaxed)</option>
       </select></div>
     <div class="field"><label for="mirror">Mirror for glass</label><select id="mirror"><option value="0">Off</option><option value="1">On</option></select></div>
-    <p>Automatic uses your browser's own speech recognition where it works well, and switches to the on-device engine where it doesn't. The on-device engine downloads once (about 40 MB), then works without internet. Speech language applies to browser speech only.</p>
+    <p>Automatic uses your browser's own speech recognition when you're online, and the on-device engine when you're offline or the browser can't listen. The on-device engine downloads once (about 40 MB), then works without internet. Speech language applies to browser speech only.</p>
+    <div class="field"><label for="offBtn">Offline use</label>
+      <div class="offline"><button id="offBtn" type="button">Get ready for offline</button><span id="offStatus"></span></div></div>
     <p>Shortcuts: Space starts or stops your voice. Up and down arrows move a line. Tap any word to jump there.</p>
     <div class="row"><button id="closeSet" class="primary" type="button">Done</button></div>
   </div>
@@ -547,7 +550,7 @@ function startBrowser() {
 // modern browser and offline once its English model has been downloaded.
 let local = null, voskModel = null, lastPartial = '';
 function engineToUse() {
-  if (cfg.engine === 'local' || !SR) return 'local';
+  if (cfg.engine === 'local' || !SR || !navigator.onLine) return 'local';
   return 'browser';
 }
 function fallBack(reason) {
@@ -555,6 +558,31 @@ function fallBack(reason) {
   note(reason + ', so Elite Prompter switched to on-device listening.');
   startLocal(true);
   return true;
+}
+// Loads the on-device model once. The engine keeps it in the browser's storage,
+// so after the first download it loads without internet.
+let modelLoading = null;
+function loadModel() {
+  if (voskModel) return Promise.resolve(voskModel);
+  if (!modelLoading) {
+    modelLoading = loadScript('vendor/vosk.js')
+      .then(() => Vosk.createModel(new URL('models/en-us.tar.gz', location.href).href))
+      .then(m => { voskModel = m; store.set('offline', '1'); offlineStatus(); return m; })
+      .catch(err => { modelLoading = null; throw err; });
+  }
+  return modelLoading;
+}
+function offlineStatus(text) {
+  const el = $('offStatus');
+  if (el) el.textContent = text || (store.get('offline', '') === '1' ? 'Ready. Elite Prompter works without internet on this device.' : 'Not downloaded yet. It takes about 40 MB, so use Wi-Fi.');
+}
+function getReadyOffline() {
+  offlineStatus('Downloading the speech engine…');
+  $('offBtn').disabled = true;
+  loadModel()
+    .then(() => offlineStatus())
+    .catch(() => offlineStatus('The download did not finish. Check your internet connection and try again.'))
+    .finally(() => { $('offBtn').disabled = false; });
 }
 function startMic() {
   if (engineToUse() === 'local') startLocal(false); else startBrowser();
@@ -579,14 +607,11 @@ async function startLocal(keepNote) {
   beginSession();
   $('mic').textContent = 'Stop'; $('mic').classList.add('on');
   if (!keepNote) note('');
-  heard(voskModel ? 'starting…' : 'getting on-device listening ready (first time downloads about 40 MB)…');
+  heard(voskModel || store.get('offline', '') === '1' ? 'starting…' : 'getting on-device listening ready (first time downloads about 40 MB)…');
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
     local.stream = stream;
-    if (!voskModel) {
-      await loadScript('vendor/vosk.js');
-      voskModel = await Vosk.createModel(new URL('models/en-us.tar.gz', location.href).href);
-    }
+    await loadModel();
     if (!listening || !local || local.ctx !== ctx) { stream.getTracks().forEach(t => t.stop()); return; }
     const r = new voskModel.KaldiRecognizer(ctx.sampleRate);
     r.on('result', m => {
@@ -718,6 +743,8 @@ $('lang').value = cfg.lang;
 $('lang').onchange = e => { cfg.lang = e.target.value; store.set('lang', cfg.lang); if (listening) { stopMic(false); startMic(); } };
 $('off').value = String(cfg.off);
 $('off').onchange = e => { cfg.off = +e.target.value; store.set('off', cfg.off); const p = F.st.pos; build(); F.setPos(p); render(true); };
+$('offBtn').onclick = getReadyOffline;
+offlineStatus();
 $('engine').value = cfg.engine;
 $('engine').onchange = e => { cfg.engine = e.target.value; store.set('engine', cfg.engine); if (listening) { stopMic(false); startMic(); } };
 $('mirror').value = cfg.mirror;
@@ -726,7 +753,7 @@ $('mirror').onchange = e => { cfg.mirror = e.target.value; store.set('mirror', c
 window.addEventListener('resize', () => aim());
 
 applySize(); applyMirror(); build();
-if ('serviceWorker' in navigator && location.protocol === 'https:') {
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   navigator.serviceWorker.register('sw.js').catch(() => {});
 }
 </script>
